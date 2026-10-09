@@ -7,11 +7,12 @@ from flask_cors import CORS
 
 from rover.camera.camera_manager import CameraManager
 from rover.camera.camera_settings import JPEG_QUALITY
+from rover.navigation.ultrasonic_sensor import UltrasonicSensor
+from rover.navigation.obstacle_avoidance import ObstacleAvoidance
+from rover.control.buzzer_controller import BuzzerController
 
 
-# =========================================================
-# DHT11 SENSOR INITIALIZATION
-# =========================================================
+# ---------------- DHT11 ----------------
 
 try:
     import board
@@ -19,62 +20,32 @@ try:
 
     dht_sensor = adafruit_dht.DHT11(board.D4)
     DHT_AVAILABLE = True
-
-    print("[DHT] DHT11 initialized on GPIO4")
+    print("[DHT] Initialized on GPIO4")
 
 except Exception as error:
-    print(f"[DHT] Sensor initialization failed: {error}")
-
+    print(f"[DHT] Initialization failed: {error}")
     dht_sensor = None
     DHT_AVAILABLE = False
 
 
-# =========================================================
-# BUZZER INITIALIZATION
-# =========================================================
-
-try:
-    from gpiozero import OutputDevice
-
-    # BCM GPIO17 = Physical Pin 11
-    # Assumes an active-high buzzer module.
-    buzzer = OutputDevice(
-        17,
-        active_high=True,
-        initial_value=False,
-    )
-
-    BUZZER_AVAILABLE = True
-
-    print("[BUZZER] Buzzer initialized on GPIO17")
-
-except Exception as error:
-    print(f"[BUZZER] Initialization failed: {error}")
-
-    buzzer = None
-    BUZZER_AVAILABLE = False
-
-
-# =========================================================
-# FLASK AND CAMERA
-# =========================================================
+# ---------------- Flask and devices ----------------
 
 app = Flask(__name__)
 CORS(app)
 
 camera = CameraManager()
 
+ultrasonic = None
+obstacle_logic = ObstacleAvoidance()
+buzzer_controller = None
 
-# =========================================================
-# SENSOR SETTINGS
-# =========================================================
-
-SENSOR_INTERVAL = 2.0
+sensor_lock = threading.Lock()
+shutdown_event = threading.Event()
 
 TEMPERATURE_THRESHOLD = 38.0
 TEMPERATURE_RESET = 37.5
 
-sensor_lock = threading.Lock()
+temperature_alert_active = False
 
 latest_sensor_data = {
     "temperature": None,
@@ -82,194 +53,146 @@ latest_sensor_data = {
     "sensorStatus": "Initializing",
     "lastSensorUpdate": None,
     "temperatureAlert": False,
+    "distance": None,
+    "ultrasonicStatus": "Initializing",
+    "obstacleDetected": None,
+    "obstacleLevel": "UNKNOWN",
+    "obstacleMessage": "Waiting for ultrasonic reading",
     "buzzerStatus": "OFF",
+    "obstacleBuzzerPattern": "OFF",
+    "roverStatus": "Connected",
+    "cameraStatus": "Initializing",
+    "alerts": [],
 }
 
-buzzer_alert_active = False
-shutdown_event = threading.Event()
 
-
-# =========================================================
-# SENSOR READING FUNCTION
-# =========================================================
-
-def read_dht_sensor():
-    """Read temperature and humidity from DHT11."""
-
-    if not DHT_AVAILABLE or dht_sensor is None:
-        return None
-
-    try:
-        temperature = dht_sensor.temperature
-        humidity = dht_sensor.humidity
-
-        if temperature is None or humidity is None:
-            raise RuntimeError("Empty sensor reading")
-
-        return {
-            "temperature": round(float(temperature), 1),
-            "humidity": round(float(humidity), 1),
-            "sensorStatus": "Connected",
-            "lastSensorUpdate": time.time(),
-        }
-
-    except RuntimeError as error:
-        # DHT sensors can occasionally produce temporary read errors.
-        print(f"[DHT] Temporary reading error: {error}")
-        return None
-
-    except Exception as error:
-        print(f"[DHT] Reading failed: {error}")
-        return None
-
-
-# =========================================================
-# BACKGROUND SENSOR MONITOR
-# =========================================================
+# ---------------- Background monitoring ----------------
 
 def sensor_monitor_loop():
-    """Read DHT11 periodically without blocking dashboard requests."""
+    global temperature_alert_active
 
-    global buzzer_alert_active
-
-    print("[SENSOR] Background monitoring started")
+    print("[SENSOR] Monitoring started")
 
     while not shutdown_event.is_set():
 
-        if not DHT_AVAILABLE:
+        # Read temperature and humidity
+        if DHT_AVAILABLE and dht_sensor is not None:
+            try:
+                temperature = dht_sensor.temperature
+                humidity = dht_sensor.humidity
+
+                if temperature is not None and humidity is not None:
+                    temperature = round(float(temperature), 1)
+                    humidity = round(float(humidity), 1)
+
+                    with sensor_lock:
+                        latest_sensor_data.update({
+                            "temperature": temperature,
+                            "humidity": humidity,
+                            "sensorStatus": "Connected",
+                            "lastSensorUpdate": time.time(),
+                        })
+
+                        if temperature > TEMPERATURE_THRESHOLD:
+                            temperature_alert_active = True
+                        elif temperature <= TEMPERATURE_RESET:
+                            temperature_alert_active = False
+
+                        latest_sensor_data["temperatureAlert"] = (
+                            temperature_alert_active
+                        )
+
+                    if buzzer_controller is not None:
+                        buzzer_controller.set_temperature_alert(
+                            temperature_alert_active
+                        )
+
+                    print(
+                        f"[DHT] Temp={temperature} C, "
+                        f"Humidity={humidity}%"
+                    )
+
+            except RuntimeError as error:
+                # DHT11 can have occasional temporary read errors.
+                print(f"[DHT] Temporary read error: {error}")
+
+            except Exception as error:
+                print(f"[DHT] Read error: {error}")
+
+        else:
             with sensor_lock:
                 latest_sensor_data["sensorStatus"] = "DHT11 unavailable"
 
-            shutdown_event.wait(SENSOR_INTERVAL)
-            continue
-
-        reading = read_dht_sensor()
-
-        if reading is None:
-            # Keep the previous valid temperature and humidity.
-            # Mark the sensor status so the dashboard can show an issue.
-            with sensor_lock:
-                latest_sensor_data["sensorStatus"] = "Read error"
-
-            shutdown_event.wait(SENSOR_INTERVAL)
-            continue
-
-        temperature = reading["temperature"]
-
-        # Apply hysteresis to prevent rapid ON/OFF switching.
-        with sensor_lock:
-            latest_sensor_data.update(reading)
-
-            if temperature > TEMPERATURE_THRESHOLD:
-                buzzer_alert_active = True
-
-            elif temperature <= TEMPERATURE_RESET:
-                buzzer_alert_active = False
-
-            latest_sensor_data["temperatureAlert"] = (
-                buzzer_alert_active
-            )
-
-        print(
-            f"[SENSOR] Temperature: {temperature} C | "
-            f"Humidity: {reading['humidity']}% | "
-            f"Alert: {buzzer_alert_active}"
-        )
-
-        shutdown_event.wait(SENSOR_INTERVAL)
+        shutdown_event.wait(2.0)
 
 
-# =========================================================
-# BUZZER MONITOR
-# =========================================================
-
-def buzzer_loop():
-    """Beep while the high-temperature alert is active."""
-
-    print("[BUZZER] Background monitoring started")
+def ultrasonic_monitor_loop():
+    print("[ULTRASONIC] Monitoring started")
 
     while not shutdown_event.is_set():
 
-        with sensor_lock:
-            alert_active = latest_sensor_data["temperatureAlert"]
+        distance = None
 
-        if not BUZZER_AVAILABLE or buzzer is None:
+        if ultrasonic is not None:
+            distance = ultrasonic.read_distance()
+
+        if distance is None:
+            result = obstacle_logic.analyze_distance(None)
+
             with sensor_lock:
-                latest_sensor_data["buzzerStatus"] = "Unavailable"
+                latest_sensor_data.update({
+                    "distance": None,
+                    "ultrasonicStatus": (
+                        ultrasonic.get_data()["sensorStatus"]
+                        if ultrasonic is not None
+                        else "Unavailable"
+                    ),
+                    **result,
+                })
 
-            shutdown_event.wait(0.2)
-            continue
-
-        if alert_active:
-            try:
-                buzzer.on()
-
-                with sensor_lock:
-                    latest_sensor_data["buzzerStatus"] = "ON"
-
-                if shutdown_event.wait(0.25):
-                    break
-
-                buzzer.off()
-
-                with sensor_lock:
-                    latest_sensor_data["buzzerStatus"] = "OFF"
-
-                if shutdown_event.wait(0.25):
-                    break
-
-            except Exception as error:
-                print(f"[BUZZER] Error: {error}")
-
-                try:
-                    buzzer.off()
-                except Exception:
-                    pass
-
-                shutdown_event.wait(0.5)
+            if buzzer_controller is not None:
+                buzzer_controller.set_obstacle_pattern("OFF")
 
         else:
-            try:
-                buzzer.off()
-            except Exception:
-                pass
+            result = obstacle_logic.analyze_distance(distance)
 
             with sensor_lock:
-                latest_sensor_data["buzzerStatus"] = "OFF"
+                latest_sensor_data.update({
+                    "distance": distance,
+                    "ultrasonicStatus": "Connected",
+                    **result,
+                })
 
-            shutdown_event.wait(0.2)
+            if buzzer_controller is not None:
+                buzzer_controller.set_obstacle_pattern(
+                    result["buzzerPattern"]
+                )
 
-    if BUZZER_AVAILABLE and buzzer is not None:
-        try:
-            buzzer.off()
-        except Exception:
-            pass
+            print(
+                f"[ULTRASONIC] Distance={distance} cm | "
+                f"Level={result['obstacleLevel']} | "
+                f"Buzzer={result['buzzerPattern']}"
+            )
+
+        shutdown_event.wait(0.15)
 
 
-# =========================================================
-# CAMERA STREAM
-# =========================================================
+# ---------------- Camera stream ----------------
 
 def generate_frames():
-
     while not shutdown_event.is_set():
-
         frame = camera.get_frame()
 
         if frame is None:
             time.sleep(0.02)
             continue
 
-        # CameraManager provides RGB frames.
         frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
 
         success, buffer = cv2.imencode(
             ".jpg",
             frame,
-            [
-                cv2.IMWRITE_JPEG_QUALITY,
-                JPEG_QUALITY,
-            ],
+            [cv2.IMWRITE_JPEG_QUALITY, JPEG_QUALITY],
         )
 
         if not success:
@@ -283,20 +206,54 @@ def generate_frames():
         )
 
 
-# =========================================================
-# HOME PAGE
-# =========================================================
+# ---------------- API helpers ----------------
+
+def build_alerts(data):
+    alerts = []
+
+    if data.get("temperatureAlert"):
+        alerts.append({
+            "type": "temperature",
+            "severity": "critical",
+            "message": (
+                f"High temperature: {data.get('temperature')} C"
+            ),
+        })
+
+    if data.get("obstacleLevel") == "DANGER":
+        alerts.append({
+            "type": "obstacle",
+            "severity": "critical",
+            "message": data.get("obstacleMessage"),
+        })
+
+    elif data.get("obstacleLevel") == "CAUTION":
+        alerts.append({
+            "type": "obstacle",
+            "severity": "warning",
+            "message": data.get("obstacleMessage"),
+        })
+
+    if data.get("ultrasonicStatus") in ("Unavailable", "Read error"):
+        alerts.append({
+            "type": "ultrasonic",
+            "severity": "warning",
+            "message": (
+                "Ultrasonic sensor is unavailable or has a reading error"
+            ),
+        })
+
+    return alerts
+
 
 @app.route("/")
 def home():
-
     return """
     <!DOCTYPE html>
     <html>
     <head>
         <title>Mining Rescue Rover</title>
         <meta name="viewport" content="width=device-width, initial-scale=1">
-
         <style>
             body {
                 background: #101820;
@@ -305,11 +262,7 @@ def home():
                 text-align: center;
                 padding: 20px;
             }
-
-            h1 {
-                color: #00ff99;
-            }
-
+            h1 { color: #00ff99; }
             img {
                 width: 100%;
                 max-width: 900px;
@@ -318,7 +271,6 @@ def home():
             }
         </style>
     </head>
-
     <body>
         <h1>MINING RESCUE ROVER</h1>
         <p>LIVE CAMERA</p>
@@ -328,145 +280,80 @@ def home():
     """
 
 
-# =========================================================
-# CAMERA API
-# =========================================================
-
 @app.route("/video_feed")
 def video_feed():
-
     return Response(
         generate_frames(),
         mimetype="multipart/x-mixed-replace; boundary=frame",
-        headers={
-            "Cache-Control": "no-cache, no-store",
-        },
+        headers={"Cache-Control": "no-cache, no-store"},
     )
 
-
-# =========================================================
-# STATUS API
-# =========================================================
 
 @app.route("/api/status")
 def api_status():
-
     with sensor_lock:
         data = dict(latest_sensor_data)
 
-    alerts = []
-
-    if data["temperatureAlert"]:
-        alerts.append({
-            "type": "temperature",
-            "severity": "critical",
-            "message": (
-                f"High temperature detected: "
-                f"{data['temperature']} C"
-            ),
-        })
-
-    if data["sensorStatus"] in (
-        "DHT11 unavailable",
-        "Read error",
-    ):
-        alerts.append({
-            "type": "sensor",
-            "severity": "warning",
-            "message": (
-                f"Temperature/humidity sensor status: "
-                f"{data['sensorStatus']}"
-            ),
-        })
-
-    return jsonify({
-        **data,
-        "roverStatus": "Connected",
-        "cameraStatus": "Running",
-        "alerts": alerts,
-    })
-
-
-# =========================================================
-# SENSOR API
-# =========================================================
-
-@app.route("/api/sensors")
-def api_sensors():
-
-    # Return cached readings immediately.
-    # Hardware reads happen in the background thread.
-    with sensor_lock:
-        data = dict(latest_sensor_data)
-
+    data["alerts"] = build_alerts(data)
     return jsonify(data)
 
 
-# =========================================================
-# ALERT API
-# =========================================================
+@app.route("/api/sensors")
+def api_sensors():
+    with sensor_lock:
+        return jsonify(dict(latest_sensor_data))
+
 
 @app.route("/api/alerts")
 def api_alerts():
-
     with sensor_lock:
         data = dict(latest_sensor_data)
 
-    alerts = []
-
-    if data["temperatureAlert"]:
-        alerts.append({
-            "type": "temperature",
-            "severity": "critical",
-            "message": (
-                f"Temperature is above "
-                f"{TEMPERATURE_THRESHOLD} C"
-            ),
-        })
-
-    if data["sensorStatus"] in (
-        "DHT11 unavailable",
-        "Read error",
-    ):
-        alerts.append({
-            "type": "sensor",
-            "severity": "warning",
-            "message": (
-                f"Sensor problem: {data['sensorStatus']}"
-            ),
-        })
-
-    return jsonify(alerts)
+    return jsonify(build_alerts(data))
 
 
-# =========================================================
-# APPLICATION STARTUP
-# =========================================================
+# ---------------- Application startup ----------------
 
 def main():
+    global ultrasonic, buzzer_controller
 
-    print("[ROVER] Starting Mining Rescue Rover...")
-
-    sensor_thread = threading.Thread(
-        target=sensor_monitor_loop,
-        daemon=True,
-        name="sensor-monitor",
-    )
-
-    buzzer_thread = threading.Thread(
-        target=buzzer_loop,
-        daemon=True,
-        name="buzzer-monitor",
-    )
+    print("[ROVER] Starting Mining Rescue Rover")
 
     try:
+        # Create one shared buzzer controller.
+        buzzer_controller = BuzzerController(pin=17)
+
+        # Initialize ultrasonic sensor.
+        try:
+            ultrasonic = UltrasonicSensor(
+                trigger_pin=23,
+                echo_pin=24,
+            )
+        except Exception as error:
+            ultrasonic = None
+            print(f"[ULTRASONIC] Initialization failed: {error}")
+
         camera.start()
-        print("[CAMERA] Camera started")
+
+        with sensor_lock:
+            latest_sensor_data["cameraStatus"] = "Running"
+
+        sensor_thread = threading.Thread(
+            target=sensor_monitor_loop,
+            daemon=True,
+            name="sensor-monitor",
+        )
+
+        ultrasonic_thread = threading.Thread(
+            target=ultrasonic_monitor_loop,
+            daemon=True,
+            name="ultrasonic-monitor",
+        )
 
         sensor_thread.start()
-        buzzer_thread.start()
+        ultrasonic_thread.start()
 
-        print("[ROVER] Camera and sensor API: port 5000")
+        print("[ROVER] API available on port 5000")
 
         app.run(
             host="0.0.0.0",
@@ -477,17 +364,16 @@ def main():
         )
 
     except KeyboardInterrupt:
-        print("\n[ROVER] Shutdown requested")
+        print("[ROVER] Shutdown requested")
 
     finally:
         shutdown_event.set()
 
-        if BUZZER_AVAILABLE and buzzer is not None:
-            try:
-                buzzer.off()
-                buzzer.close()
-            except Exception:
-                pass
+        if buzzer_controller is not None:
+            buzzer_controller.close()
+
+        if ultrasonic is not None:
+            ultrasonic.close()
 
         if dht_sensor is not None:
             try:
@@ -496,7 +382,6 @@ def main():
                 pass
 
         camera.stop()
-
         print("[ROVER] Shutdown complete")
 
 

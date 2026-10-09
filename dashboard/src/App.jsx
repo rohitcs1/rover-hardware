@@ -425,14 +425,57 @@ export default function App() {
       case "Obstacle Detection":
         return (
           <>
-            <SectionTitle title="Obstacle Detection" subtitle="Ultrasonic distance and scanning status." />
+            <SectionTitle title="Obstacle Detection" subtitle="Live ultrasonic distance and buzzer status." />
             <div className="metric-grid">
-              <MetricCard title="Distance" value={telemetry.distance} unit={telemetry.distance != null ? " cm" : ""} icon={Waves} color="blue" note="Ultrasonic sensor reading" />
-              <MetricCard title="Navigation" value={telemetry.roverStatus} icon={Gauge} color="purple" note="Reported backend status" />
+              <MetricCard
+                title="Distance"
+                value={telemetry.distance}
+                unit={telemetry.distance != null ? " cm" : ""}
+                icon={Waves}
+                color="blue"
+                note={telemetry.ultrasonicStatus || "Ultrasonic sensor"}
+              />
+              <MetricCard
+                title="Obstacle Level"
+                value={telemetry.obstacleLevel || "UNKNOWN"}
+                icon={AlertTriangle}
+                color="orange"
+                note={telemetry.obstacleMessage || "Waiting for reading"}
+              />
+              <MetricCard
+                title="Buzzer"
+                value={telemetry.buzzerStatus || "OFF"}
+                icon={Activity}
+                color="purple"
+                note={`Obstacle pattern: ${telemetry.obstacleBuzzerPattern || "OFF"}`}
+              />
             </div>
             <div className="panel">
               <h3>Obstacle telemetry</h3>
-              <EmptyState message="Waiting for ultrasonic sensor readings. Connect the sensor API to display live distance." />
+              <div className="sensor-row">
+                <span className="sensor-symbol distance"><Waves size={18} /></span>
+                <div className="sensor-info">
+                  <strong>Ultrasonic sensor</strong>
+                  <small>{telemetry.ultrasonicStatus || "Waiting"}</small>
+                </div>
+                <b>{formatValue(telemetry.distance, telemetry.distance != null ? " cm" : "")}</b>
+              </div>
+              <div className="sensor-row">
+                <span className="sensor-symbol temp"><AlertTriangle size={18} /></span>
+                <div className="sensor-info">
+                  <strong>Obstacle status</strong>
+                  <small>{telemetry.obstacleMessage || "No reading yet"}</small>
+                </div>
+                <b>{telemetry.obstacleLevel || "UNKNOWN"}</b>
+              </div>
+              <div className="sensor-row">
+                <span className="sensor-symbol humidity"><Activity size={18} /></span>
+                <div className="sensor-info">
+                  <strong>Temperature alert</strong>
+                  <small>Separate temperature alarm</small>
+                </div>
+                <b>{telemetry.temperatureAlert ? "ACTIVE" : "OFF"}</b>
+              </div>
             </div>
           </>
         );
