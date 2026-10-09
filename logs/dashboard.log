@@ -2,9 +2,8 @@
 > mining-rescue-rover-dashboard@1.0.0 dev
 > vite --host 0.0.0.0
 
-error when starting dev server:
-Error: Port 5173 is already in use
-    at Server.onError (file:///home/pi/robber/mining-rescue-rover/dashboard/node_modules/vite/dist/node/chunks/dep-BK3b2jBa.js:45596:18)
-    at Server.emit (node:events:524:28)
-    at emitErrorNT (node:net:1941:8)
-    at process.processTicksAndRejections (node:internal/process/task_queues:82:21)
+
+  VITE v5.4.21  ready in 1479 ms
+
+  ➜  Local:   http://localhost:5173/
+  ➜  Network: http://172.26.135.149:5173/
