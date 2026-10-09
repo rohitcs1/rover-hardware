@@ -1,0 +1,18 @@
+[0:08:34.136394620] [2118]  INFO Camera camera_manager.cpp:340 libcamera v0.7.2+rpt20260817
+[0:08:34.154636796] [2124]  INFO RPI pipeline_base.cpp:1133 Using configuration file '/usr/share/libcamera/pipeline/rpi/vc4/rpi_apps.yaml'
+[0:08:34.181978686] [2124]  INFO IPAProxy ipa_proxy.cpp:184 Using tuning file /usr/share/libcamera/ipa/rpi/vc4/ov5647.json
+[0:08:34.188077697] [2124]  INFO Camera camera_manager.cpp:223 Adding camera '/base/soc/i2c0mux/i2c@1/ov5647@36' for pipeline handler rpi/vc4
+[0:08:34.188157790] [2124]  INFO RPI vc4.cpp:445 Registered camera /base/soc/i2c0mux/i2c@1/ov5647@36 to Unicam device /dev/media3 and ISP device /dev/media1
+[0:08:34.194624476] [2118]  INFO Camera camera.cpp:1216 configuring streams: (0) 640x360-RGB888/SMPTE170M/Rec709/None/Full (1) 1920x1080-SGBRG10_CSI2P/RAW
+[0:08:34.195065005] [2124]  INFO RPI vc4.cpp:620 Sensor: /base/soc/i2c0mux/i2c@1/ov5647@36 - Selected sensor format: 1920x1080-SGBRG10_1X10/RAW - Selected unicam format: 1920x1080-pGAA/RAW
+[ROVER] Starting camera...
+Camera started successfully.
+[ROVER] Server listening on port 5000
+ * Serving Flask app 'streaming'
+ * Debug mode: off
+[31m[1mWARNING: This is a development server. Do not use it in a production deployment. Use a production WSGI server instead.[0m
+ * Running on all addresses (0.0.0.0)
+ * Running on http://127.0.0.1:5000
+ * Running on http://172.26.135.149:5000
+[33mPress CTRL+C to quit[0m
+Camera stopped.
