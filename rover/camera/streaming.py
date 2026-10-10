@@ -10,6 +10,7 @@ from rover.camera.camera_settings import JPEG_QUALITY
 from rover.navigation.ultrasonic_sensor import UltrasonicSensor
 from rover.navigation.obstacle_avoidance import ObstacleAvoidance
 from rover.control.buzzer_controller import BuzzerController
+from rover.navigation.servo_controller import ServoController
 
 
 # ---------------- DHT11 ----------------
@@ -38,6 +39,11 @@ camera = CameraManager()
 ultrasonic = None
 obstacle_logic = ObstacleAvoidance()
 buzzer_controller = None
+servo_controller = None
+obstacle_scan_active = False
+servo_scan_lock = threading.Lock()
+SERVO_TRIGGER_DISTANCE_CM = 30.0
+
 
 sensor_lock = threading.Lock()
 shutdown_event = threading.Event()
@@ -126,7 +132,34 @@ def sensor_monitor_loop():
         shutdown_event.wait(2.0)
 
 
+def scan_servo_once():
+    if servo_controller is None:
+        print("[SERVO] Controller unavailable")
+        return
+
+    if not servo_scan_lock.acquire(blocking=False):
+        return
+
+    try:
+        print("[SERVO] LEFT")
+        servo_controller.move_smoothly(-45)
+        time.sleep(0.3)
+
+        print("[SERVO] RIGHT")
+        servo_controller.move_smoothly(45)
+        time.sleep(0.3)
+
+        print("[SERVO] CENTER")
+        servo_controller.move_smoothly(0)
+        print("[SERVO] Scan complete")
+    except Exception as error:
+        print(f"[SERVO] Scan error: {error}")
+    finally:
+        servo_scan_lock.release()
+
+
 def ultrasonic_monitor_loop():
+    global obstacle_scan_active
     print("[ULTRASONIC] Monitoring started")
 
     while not shutdown_event.is_set():
@@ -155,6 +188,17 @@ def ultrasonic_monitor_loop():
 
         else:
             result = obstacle_logic.analyze_distance(distance)
+
+            if distance <= SERVO_TRIGGER_DISTANCE_CM:
+                if not obstacle_scan_active:
+                    obstacle_scan_active = True
+                    threading.Thread(
+                        target=scan_servo_once,
+                        daemon=True,
+                        name="servo-obstacle-scan",
+                    ).start()
+            else:
+                obstacle_scan_active = False
 
             with sensor_lock:
                 latest_sensor_data.update({
@@ -315,13 +359,20 @@ def api_alerts():
 # ---------------- Application startup ----------------
 
 def main():
-    global ultrasonic, buzzer_controller
+    global ultrasonic, buzzer_controller, servo_controller
 
     print("[ROVER] Starting Mining Rescue Rover")
 
     try:
         # Create one shared buzzer controller.
         buzzer_controller = BuzzerController(pin=17)
+
+        try:
+            servo_controller = ServoController(pin=18)
+            print("[SERVO] Initialized on GPIO18")
+        except Exception as error:
+            servo_controller = None
+            print(f"[SERVO] Initialization failed: {error}")
 
         # Initialize ultrasonic sensor.
         try:
@@ -374,6 +425,9 @@ def main():
 
         if ultrasonic is not None:
             ultrasonic.close()
+
+        if servo_controller is not None:
+            servo_controller.close()
 
         if dht_sensor is not None:
             try:
